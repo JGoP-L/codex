@@ -2121,7 +2121,6 @@ dependencies = [
  "codex-apply-patch",
  "codex-exec-server",
  "codex-linux-sandbox",
- "codex-runtime-install",
  "codex-sandboxing",
  "codex-shell-escalation",
  "codex-utils-absolute-path",
@@ -3591,10 +3590,10 @@ name = "codex-runtime-install"
 version = "0.0.0"
 dependencies = [
  "codex-app-server-protocol",
+ "codex-exec-server",
+ "codex-protocol",
  "codex-utils-absolute-path",
- "futures",
  "pretty_assertions",
- "reqwest",
  "serde",
  "serde_json",
  "sha2",
@@ -3602,7 +3601,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
- "zip 2.4.2",
+ "uuid",
 ]
 
 [[package]]

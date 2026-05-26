@@ -60,7 +60,6 @@ pub struct InitializeParams {
 pub struct InitializeResponse {
     pub session_id: String,
     pub codex_home: AbsolutePathBuf,
-    pub codex_self_exe: AbsolutePathBuf,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

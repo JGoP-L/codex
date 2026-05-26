@@ -96,7 +96,6 @@ mod outgoing_message;
 mod request_processors;
 mod request_serialization;
 mod runtime_install;
-mod runtime_install_worker;
 mod server_request_error;
 mod skills_watcher;
 mod thread_state;
