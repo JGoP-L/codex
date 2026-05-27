@@ -233,7 +233,7 @@ fn render_debug_config_lines(stack: &ConfigLayerStack) -> Vec<Line<'static>> {
 
     if let Some(network) = requirements.network.as_ref() {
         requirement_lines.push(requirement_line(
-            "experimental_network",
+            "permissions.network",
             format_network_constraints(&network.value),
             Some(&network.source),
         ));
@@ -787,7 +787,7 @@ mod tests {
         assert!(rendered.contains("mcp_servers: docs (source: MDM managed_config.toml (legacy))"));
         assert!(rendered.contains("enforce_residency: us (source: cloud requirements)"));
         assert!(rendered.contains(
-            "experimental_network: enabled=true, domains={example.com=allow} (source: cloud requirements)"
+            "permissions.network: enabled=true, domains={example.com=allow} (source: cloud requirements)"
         ));
         assert!(
             rendered.contains(
@@ -854,7 +854,7 @@ mod tests {
 
         let rendered = render_to_text(&render_debug_config_lines(&stack));
         assert!(rendered.contains(
-            "experimental_network: unix_sockets={/tmp/blocked.sock=none, /tmp/codex.sock=allow} (source: cloud requirements)"
+            "permissions.network: unix_sockets={/tmp/blocked.sock=none, /tmp/codex.sock=allow} (source: cloud requirements)"
         ));
     }
 

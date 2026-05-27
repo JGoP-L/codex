@@ -4,7 +4,8 @@
 import type { WebSearchMode } from "../WebSearchMode";
 import type { AskForApproval } from "./AskForApproval";
 import type { ComputerUseRequirements } from "./ComputerUseRequirements";
+import type { NetworkRequirements } from "./NetworkRequirements";
 import type { ResidencyRequirement } from "./ResidencyRequirement";
 import type { SandboxMode } from "./SandboxMode";
 
-export type ConfigRequirements = {allowedApprovalPolicies: Array<AskForApproval> | null, allowedSandboxModes: Array<SandboxMode> | null, allowedPermissions: Array<string> | null, allowedWebSearchModes: Array<WebSearchMode> | null, allowManagedHooksOnly: boolean | null, allowAppshots: boolean | null, computerUse: ComputerUseRequirements | null, featureRequirements: { [key in string]?: boolean } | null, enforceResidency: ResidencyRequirement | null};
+export type ConfigRequirements = {allowedApprovalPolicies: Array<AskForApproval> | null, allowedSandboxModes: Array<SandboxMode> | null, allowedPermissions: Array<string> | null, allowedWebSearchModes: Array<WebSearchMode> | null, allowManagedHooksOnly: boolean | null, allowAppshots: boolean | null, computerUse: ComputerUseRequirements | null, featureRequirements: { [key in string]?: boolean } | null, enforceResidency: ResidencyRequirement | null, network: NetworkRequirements | null};
