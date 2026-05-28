@@ -41,6 +41,7 @@ impl ToolSearchHandler {
     pub(crate) fn new(search_infos: Vec<ToolSearchInfo>) -> Self {
         Self::new_with_lazy_mcp_tools(
             search_infos,
+            /*reloaded_mcp_search_infos*/ Vec::new(),
             /*lazy_mcp_tools*/ None,
             LazyToolRegistry::default(),
         )
@@ -48,6 +49,7 @@ impl ToolSearchHandler {
 
     pub(crate) fn new_with_lazy_mcp_tools(
         search_infos: Vec<ToolSearchInfo>,
+        reloaded_mcp_search_infos: Vec<ToolSearchInfo>,
         lazy_mcp_tools: Option<LazyMcpToolSearchLoader>,
         lazy_tool_registry: LazyToolRegistry,
     ) -> Self {
@@ -59,6 +61,11 @@ impl ToolSearchHandler {
                 search_source_infos.push(source_info);
             }
         }
+        search_source_infos.extend(
+            reloaded_mcp_search_infos
+                .into_iter()
+                .filter_map(|search_info| search_info.source_info),
+        );
         let documents: Vec<Document<usize>> = entries
             .iter()
             .map(|entry| entry.search_text.clone())
@@ -312,12 +319,26 @@ mod tests {
     }
 
     fn tool_info(server_name: &str, tool_name: &str, description_prefix: &str) -> ToolInfo {
+        tool_info_with_namespace(
+            server_name,
+            format!("mcp__{server_name}"),
+            tool_name,
+            description_prefix,
+        )
+    }
+
+    fn tool_info_with_namespace(
+        server_name: &str,
+        callable_namespace: String,
+        tool_name: &str,
+        description_prefix: &str,
+    ) -> ToolInfo {
         ToolInfo {
             server_name: server_name.to_string(),
             supports_parallel_tool_calls: false,
             server_origin: None,
             callable_name: tool_name.to_string(),
-            callable_namespace: format!("mcp__{server_name}"),
+            callable_namespace,
             namespace_description: None,
             tool: Tool::new(
                 tool_name.to_string(),
@@ -343,6 +364,7 @@ mod tests {
         );
         let handler = ToolSearchHandler::new_with_lazy_mcp_tools(
             Vec::new(),
+            /*reloaded_mcp_search_infos*/ Vec::new(),
             /*lazy_mcp_tools*/ None,
             lazy_tool_registry,
         );
@@ -359,6 +381,60 @@ mod tests {
         assert_eq!(
             registry.tool_names_for_test(),
             vec![ToolName::namespaced("mcp__calendar", "create_event")]
+        );
+    }
+
+    #[test]
+    fn lazy_mcp_search_replaces_entries_normalized_before_new_collision() {
+        let initial_ready_search_info = McpHandler::new(tool_info_with_namespace(
+            "foo-bar",
+            "mcp__foo_bar".to_string(),
+            "lookup",
+            "ready unique",
+        ))
+        .expect("initial MCP tool should convert")
+        .search_info()
+        .expect("initial MCP handler should return search info");
+        let handler = ToolSearchHandler::new_with_lazy_mcp_tools(
+            Vec::new(),
+            vec![initial_ready_search_info],
+            /*lazy_mcp_tools*/ None,
+            LazyToolRegistry::default(),
+        );
+
+        let tools = handler
+            .search_with_lazy_mcp_tools(
+                "lookup",
+                /*limit*/ 2,
+                vec![
+                    tool_info_with_namespace(
+                        "foo-bar",
+                        "mcp__foo_bar_111111".to_string(),
+                        "lookup",
+                        "ready unique",
+                    ),
+                    tool_info_with_namespace(
+                        "foo_bar",
+                        "mcp__foo_bar_222222".to_string(),
+                        "lookup",
+                        "pending other",
+                    ),
+                ],
+            )
+            .expect("lazy MCP search should produce current normalized tool specs");
+
+        assert_eq!(tools.len(), 2);
+        let mut namespaces = tools
+            .iter()
+            .map(|tool| match tool {
+                LoadableToolSpec::Namespace(namespace) => namespace.name.as_str(),
+                LoadableToolSpec::Function(_) => panic!("expected MCP namespace output"),
+            })
+            .collect::<Vec<_>>();
+        namespaces.sort_unstable();
+        assert_eq!(
+            namespaces,
+            vec!["mcp__foo_bar_111111", "mcp__foo_bar_222222"]
         );
     }
 }

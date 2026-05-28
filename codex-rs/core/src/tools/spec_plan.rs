@@ -811,18 +811,43 @@ fn append_tool_search_executor(
         return;
     }
 
+    let lazily_reloaded_mcp_tool_names = if context.lazy_mcp_tools.is_some() {
+        context
+            .deferred_mcp_tools
+            .unwrap_or_default()
+            .iter()
+            .map(ToolInfo::canonical_tool_name)
+            .collect::<HashSet<_>>()
+    } else {
+        HashSet::new()
+    };
+    let mut reloaded_mcp_search_infos = Vec::new();
     let search_infos = planned_tools
         .runtimes()
         .iter()
         .filter(|executor| executor.exposure() == ToolExposure::Deferred)
-        .filter_map(|executor| executor.search_info())
+        .filter_map(|executor| {
+            let search_info = executor.search_info()?;
+            if lazily_reloaded_mcp_tool_names.contains(&executor.tool_name()) {
+                // Keep the initial source guidance while the lazy loader rebuilds
+                // these MCP entries from one current normalized inventory.
+                reloaded_mcp_search_infos.push(search_info);
+                None
+            } else {
+                Some(search_info)
+            }
+        })
         .collect::<Vec<_>>();
-    if search_infos.is_empty() && context.lazy_mcp_tools.is_none() {
+    if search_infos.is_empty()
+        && reloaded_mcp_search_infos.is_empty()
+        && context.lazy_mcp_tools.is_none()
+    {
         return;
     }
 
     planned_tools.add(ToolSearchHandler::new_with_lazy_mcp_tools(
         search_infos,
+        reloaded_mcp_search_infos,
         context.lazy_mcp_tools.cloned(),
         lazy_tool_registry,
     ));

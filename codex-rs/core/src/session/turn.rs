@@ -1312,24 +1312,23 @@ async fn load_pending_mcp_tools_for_search(
         manager.wait_for_servers_ready(&pending_mcp_server_names)
     };
     let _failures = readiness.await;
-    let pending_mcp_server_names = pending_mcp_server_names.into_iter().collect::<HashSet<_>>();
-    let pending_mcp_tools = mcp_connection_manager
+    // Names are normalized across the entire visible MCP inventory. Once
+    // pending tools arrive, rebuild all searchable MCP entries together so a
+    // newly introduced collision cannot invalidate a previously returned name.
+    let available_mcp_tools = mcp_connection_manager
         .read()
         .await
         .list_ready_or_cached_tools()
-        .await
-        .into_iter()
-        .filter(|tool| pending_mcp_server_names.contains(&tool.server_name))
-        .collect::<Vec<_>>();
+        .await;
     let connectors = apps_enabled.then(|| {
         let connectors = codex_connectors::merge::merge_plugin_connectors_with_accessible(
             effective_plugin_connector_ids,
-            connectors::accessible_connectors_from_mcp_tools(&pending_mcp_tools),
+            connectors::accessible_connectors_from_mcp_tools(&available_mcp_tools),
         );
         connectors::with_app_enabled_state(connectors, config.as_ref())
     });
     let mcp_tool_exposure = build_mcp_tool_exposure(
-        &pending_mcp_tools,
+        &available_mcp_tools,
         connectors.as_deref(),
         config.as_ref(),
         /*search_tool_enabled*/ true,
