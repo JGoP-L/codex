@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::RwLock;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -327,16 +328,65 @@ impl CoreToolRuntime for ExposureOverride {
     }
 }
 
+#[derive(Clone, Default)]
+pub(crate) struct LazyToolRegistry {
+    tools: Arc<RwLock<HashMap<ToolName, Arc<dyn CoreToolRuntime>>>>,
+}
+
+impl LazyToolRegistry {
+    pub(crate) fn register(&self, tool: Arc<dyn CoreToolRuntime>) {
+        self.tools
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry(tool.tool_name())
+            .or_insert(tool);
+    }
+
+    fn tool(&self, name: &ToolName) -> Option<Arc<dyn CoreToolRuntime>> {
+        self.tools
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(name)
+            .map(Arc::clone)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn tool_names_for_test(&self) -> Vec<ToolName> {
+        let mut names = self
+            .tools
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        names.sort();
+        names
+    }
+}
+
 pub struct ToolRegistry {
     tools: HashMap<ToolName, Arc<dyn CoreToolRuntime>>,
+    lazy_tools: LazyToolRegistry,
 }
 
 impl ToolRegistry {
+    #[cfg(test)]
     fn new(tools: HashMap<ToolName, Arc<dyn CoreToolRuntime>>) -> Self {
-        Self { tools }
+        Self {
+            tools,
+            lazy_tools: LazyToolRegistry::default(),
+        }
     }
 
+    #[cfg(test)]
     pub(crate) fn from_tools(tools: impl IntoIterator<Item = Arc<dyn CoreToolRuntime>>) -> Self {
+        Self::from_tools_with_lazy_registry(tools, LazyToolRegistry::default())
+    }
+
+    pub(crate) fn from_tools_with_lazy_registry(
+        tools: impl IntoIterator<Item = Arc<dyn CoreToolRuntime>>,
+        lazy_tools: LazyToolRegistry,
+    ) -> Self {
         let mut tools_by_name = HashMap::new();
         for tool in tools {
             let name = tool.tool_name();
@@ -346,7 +396,10 @@ impl ToolRegistry {
             }
             tools_by_name.insert(name, tool);
         }
-        Self::new(tools_by_name)
+        Self {
+            tools: tools_by_name,
+            lazy_tools,
+        }
     }
 
     #[cfg(test)]
@@ -364,19 +417,24 @@ impl ToolRegistry {
     }
 
     fn tool(&self, name: &ToolName) -> Option<Arc<dyn CoreToolRuntime>> {
-        self.tools.get(name).map(Arc::clone)
+        self.tools
+            .get(name)
+            .map(Arc::clone)
+            .or_else(|| self.lazy_tools.tool(name))
     }
 
     #[cfg(test)]
     pub(crate) fn tool_names_for_test(&self) -> Vec<ToolName> {
         let mut names = self.tools.keys().cloned().collect::<Vec<_>>();
+        names.extend(self.lazy_tools.tool_names_for_test());
         names.sort();
+        names.dedup();
         names
     }
 
     #[cfg(test)]
     pub(crate) fn tool_exposure(&self, name: &ToolName) -> Option<ToolExposure> {
-        self.tools.get(name).map(|tool| tool.exposure())
+        self.tool(name).map(|tool| tool.exposure())
     }
 
     pub(crate) fn create_diff_consumer(

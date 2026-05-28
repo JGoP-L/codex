@@ -50,6 +50,7 @@ use crate::tools::hosted_spec::WebSearchToolOptions;
 use crate::tools::hosted_spec::create_image_generation_tool;
 use crate::tools::hosted_spec::create_web_search_tool;
 use crate::tools::registry::CoreToolRuntime;
+use crate::tools::registry::LazyToolRegistry;
 use crate::tools::registry::ToolExposure;
 use crate::tools::registry::ToolRegistry;
 use crate::tools::registry::override_tool_exposure;
@@ -180,15 +181,17 @@ fn build_tool_specs_and_registry(
         wait_agent_timeouts: wait_agent_timeout_options(turn_context),
     };
     let mut planned_tools = PlannedTools::default();
+    let lazy_tool_registry = LazyToolRegistry::default();
     add_tool_sources(&context, &mut planned_tools);
-    append_tool_search_executor(&context, &mut planned_tools);
+    append_tool_search_executor(&context, &mut planned_tools, lazy_tool_registry.clone());
     prepend_code_mode_executors(&context, &mut planned_tools);
-    build_model_visible_specs_and_registry(turn_context, planned_tools)
+    build_model_visible_specs_and_registry(turn_context, planned_tools, lazy_tool_registry)
 }
 
 fn build_model_visible_specs_and_registry(
     turn_context: &TurnContext,
     planned_tools: PlannedTools,
+    lazy_tool_registry: LazyToolRegistry,
 ) -> (Vec<ToolSpec>, ToolRegistry) {
     let PlannedTools {
         runtimes,
@@ -218,7 +221,7 @@ fn build_model_visible_specs_and_registry(
         }
     }
 
-    let registry = ToolRegistry::from_tools(runtimes);
+    let registry = ToolRegistry::from_tools_with_lazy_registry(runtimes, lazy_tool_registry);
     let model_visible_specs = merge_into_namespaces(specs)
         .into_iter()
         .filter(|spec| {
@@ -801,6 +804,7 @@ fn add_extension_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mut Pl
 fn append_tool_search_executor(
     context: &CoreToolPlanContext<'_>,
     planned_tools: &mut PlannedTools,
+    lazy_tool_registry: LazyToolRegistry,
 ) {
     let turn_context = context.turn_context;
     if !(search_tool_enabled(turn_context) && namespace_tools_enabled(turn_context)) {
@@ -820,6 +824,7 @@ fn append_tool_search_executor(
     planned_tools.add(ToolSearchHandler::new_with_lazy_mcp_tools(
         search_infos,
         context.lazy_mcp_tools.cloned(),
+        lazy_tool_registry,
     ));
 }
 

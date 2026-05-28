@@ -6,6 +6,7 @@ use crate::tools::context::boxed_tool_output;
 use crate::tools::handlers::McpHandler;
 use crate::tools::handlers::tool_search_spec::create_tool_search_tool;
 use crate::tools::registry::CoreToolRuntime;
+use crate::tools::registry::LazyToolRegistry;
 use crate::tools::registry::ToolExecutor;
 use crate::tools::tool_search_entry::ToolSearchEntry;
 use crate::tools::tool_search_entry::ToolSearchInfo;
@@ -32,17 +33,23 @@ pub struct ToolSearchHandler {
     search_source_infos: Vec<ToolSearchSourceInfo>,
     search_engine: SearchEngine<usize>,
     lazy_mcp_tools: Option<LazyMcpToolSearchLoader>,
+    lazy_tool_registry: LazyToolRegistry,
 }
 
 impl ToolSearchHandler {
     #[cfg(test)]
     pub(crate) fn new(search_infos: Vec<ToolSearchInfo>) -> Self {
-        Self::new_with_lazy_mcp_tools(search_infos, /*lazy_mcp_tools*/ None)
+        Self::new_with_lazy_mcp_tools(
+            search_infos,
+            /*lazy_mcp_tools*/ None,
+            LazyToolRegistry::default(),
+        )
     }
 
     pub(crate) fn new_with_lazy_mcp_tools(
         search_infos: Vec<ToolSearchInfo>,
         lazy_mcp_tools: Option<LazyMcpToolSearchLoader>,
+        lazy_tool_registry: LazyToolRegistry,
     ) -> Self {
         let mut entries = Vec::with_capacity(search_infos.len());
         let mut search_source_infos = Vec::new();
@@ -66,6 +73,7 @@ impl ToolSearchHandler {
             search_source_infos,
             search_engine,
             lazy_mcp_tools,
+            lazy_tool_registry,
         }
     }
 }
@@ -164,7 +172,9 @@ impl ToolSearchHandler {
                     return None;
                 }
             };
-            handler.search_info().map(|info| info.entry)
+            let search_info = handler.search_info()?;
+            self.lazy_tool_registry.register(Arc::new(handler));
+            Some(search_info.entry)
         }));
         if entries.is_empty() {
             return Ok(Vec::new());
@@ -322,5 +332,33 @@ mod tests {
             connector_name: None,
             plugin_display_names: Vec::new(),
         }
+    }
+
+    #[test]
+    fn lazy_mcp_search_registers_returned_tools_for_dispatch() {
+        let lazy_tool_registry = LazyToolRegistry::default();
+        let registry = crate::tools::registry::ToolRegistry::from_tools_with_lazy_registry(
+            Vec::<Arc<dyn CoreToolRuntime>>::new(),
+            lazy_tool_registry.clone(),
+        );
+        let handler = ToolSearchHandler::new_with_lazy_mcp_tools(
+            Vec::new(),
+            /*lazy_mcp_tools*/ None,
+            lazy_tool_registry,
+        );
+
+        let tools = handler
+            .search_with_lazy_mcp_tools(
+                "calendar",
+                /*limit*/ 1,
+                vec![tool_info("calendar", "create_event", "Create events")],
+            )
+            .expect("lazy MCP search should produce a tool spec");
+
+        assert_eq!(tools.len(), 1);
+        assert_eq!(
+            registry.tool_names_for_test(),
+            vec![ToolName::namespaced("mcp__calendar", "create_event")]
+        );
     }
 }
