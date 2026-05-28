@@ -477,7 +477,11 @@ async fn tool_search_returns_deferred_tools_without_follow_up_tool_injection() -
     skip_if_no_network!(Ok(()));
 
     let server = start_mock_server().await;
-    let apps_server = AppsTestServer::mount_searchable(&server).await?;
+    let apps_server = AppsTestServer::mount_searchable_with_tools_list_delay(
+        &server,
+        Some(Duration::from_secs(/*secs*/ 2)),
+    )
+    .await?;
     let call_id = "tool-search-1";
     let mock = mount_sse_sequence(
         &server,

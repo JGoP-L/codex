@@ -3,6 +3,7 @@ use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolPayload;
 use crate::tools::context::ToolSearchOutput;
 use crate::tools::context::boxed_tool_output;
+use crate::tools::handlers::McpHandler;
 use crate::tools::handlers::tool_search_spec::create_tool_search_tool;
 use crate::tools::registry::CoreToolRuntime;
 use crate::tools::registry::ToolExecutor;
@@ -19,15 +20,30 @@ use codex_tools::ToolName;
 use codex_tools::ToolSearchSourceInfo;
 use codex_tools::ToolSpec;
 use codex_tools::coalesce_loadable_tool_specs;
+use futures::future::BoxFuture;
+use std::sync::Arc;
+use tracing::warn;
+
+pub(crate) type LazyMcpToolSearchLoader =
+    Arc<dyn Fn() -> BoxFuture<'static, Vec<codex_mcp::ToolInfo>> + Send + Sync>;
 
 pub struct ToolSearchHandler {
     entries: Vec<ToolSearchEntry>,
     search_source_infos: Vec<ToolSearchSourceInfo>,
     search_engine: SearchEngine<usize>,
+    lazy_mcp_tools: Option<LazyMcpToolSearchLoader>,
 }
 
 impl ToolSearchHandler {
+    #[cfg(test)]
     pub(crate) fn new(search_infos: Vec<ToolSearchInfo>) -> Self {
+        Self::new_with_lazy_mcp_tools(search_infos, /*lazy_mcp_tools*/ None)
+    }
+
+    pub(crate) fn new_with_lazy_mcp_tools(
+        search_infos: Vec<ToolSearchInfo>,
+        lazy_mcp_tools: Option<LazyMcpToolSearchLoader>,
+    ) -> Self {
         let mut entries = Vec::with_capacity(search_infos.len());
         let mut search_source_infos = Vec::new();
         for search_info in search_infos {
@@ -49,6 +65,7 @@ impl ToolSearchHandler {
             entries,
             search_source_infos,
             search_engine,
+            lazy_mcp_tools,
         }
     }
 }
@@ -96,11 +113,11 @@ impl ToolExecutor<ToolInvocation> for ToolSearchHandler {
             ));
         }
 
-        if self.entries.is_empty() {
-            return Ok(boxed_tool_output(ToolSearchOutput { tools: Vec::new() }));
-        }
-
-        let tools = self.search(query, limit)?;
+        let tools = if let Some(load_mcp_tools) = &self.lazy_mcp_tools {
+            self.search_with_lazy_mcp_tools(query, limit, load_mcp_tools().await)?
+        } else {
+            self.search(query, limit)?
+        };
 
         Ok(boxed_tool_output(ToolSearchOutput { tools }))
     }
@@ -131,13 +148,48 @@ impl ToolSearchHandler {
             results.into_iter().map(|entry| entry.output.clone()),
         ))
     }
+
+    fn search_with_lazy_mcp_tools(
+        &self,
+        query: &str,
+        limit: usize,
+        mcp_tools: Vec<codex_mcp::ToolInfo>,
+    ) -> Result<Vec<LoadableToolSpec>, FunctionCallError> {
+        let mut entries = self.entries.clone();
+        entries.extend(mcp_tools.into_iter().filter_map(|tool| {
+            let handler = match McpHandler::new(tool) {
+                Ok(handler) => handler,
+                Err(err) => {
+                    warn!("Skipping lazily loaded MCP tool with invalid spec: {err}");
+                    return None;
+                }
+            };
+            handler.search_info().map(|info| info.entry)
+        }));
+        if entries.is_empty() {
+            return Ok(Vec::new());
+        }
+        let documents = entries
+            .iter()
+            .map(|entry| entry.search_text.clone())
+            .enumerate()
+            .map(|(idx, search_text)| Document::new(idx, search_text))
+            .collect::<Vec<_>>();
+        let search_engine =
+            SearchEngineBuilder::<usize>::with_documents(Language::English, documents).build();
+        let results = search_engine
+            .search(query, limit)
+            .into_iter()
+            .map(|result| result.document.id)
+            .filter_map(|id| entries.get(id));
+        self.search_output_tools(results)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::tools::handlers::DynamicToolHandler;
-    use crate::tools::handlers::McpHandler;
     use codex_mcp::ToolInfo;
     use codex_protocol::dynamic_tools::DynamicToolSpec;
     use codex_tools::ResponsesApiNamespace;
@@ -145,7 +197,6 @@ mod tests {
     use codex_tools::ResponsesApiTool;
     use pretty_assertions::assert_eq;
     use rmcp::model::Tool;
-    use std::sync::Arc;
 
     #[test]
     fn mixed_search_results_coalesce_mcp_namespaces() {
