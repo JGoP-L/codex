@@ -1155,7 +1155,7 @@ async fn run_sampling_request(
 
 #[expect(
     clippy::await_holding_invalid_type,
-    reason = "ready-or-cached tool inspection never awaits unresolved MCP startup"
+    reason = "MCP tool inspection holds the session-owned manager guard while listing tools"
 )]
 #[instrument(level = "trace",
     skip_all,
@@ -1177,12 +1177,23 @@ pub(crate) async fn built_tools(
         .instrument(trace_span!("read_mcp_connection_manager"))
         .await;
     let has_mcp_servers = mcp_connection_manager.has_servers();
-    let mut pending_mcp_server_names =
-        mcp_connection_manager.pending_server_names_without_startup_snapshot();
-    let all_mcp_tools = mcp_connection_manager
-        .list_ready_or_cached_tools()
-        .or_cancel(cancellation_token)
-        .await?;
+    let lazy_mcp_tool_search_available =
+        search_tool_enabled(turn_context) && turn_context.provider.capabilities().namespace_tools;
+    let (all_mcp_tools, mut pending_mcp_server_names) = if lazy_mcp_tool_search_available {
+        let pending_mcp_server_names =
+            mcp_connection_manager.pending_server_names_without_startup_snapshot();
+        let tools = mcp_connection_manager
+            .list_ready_or_cached_tools()
+            .or_cancel(cancellation_token)
+            .await?;
+        (tools, pending_mcp_server_names)
+    } else {
+        let tools = mcp_connection_manager
+            .list_all_tools()
+            .or_cancel(cancellation_token)
+            .await?;
+        (tools, Vec::new())
+    };
     pending_mcp_server_names.retain(|server_name| {
         !all_mcp_tools
             .iter()
@@ -1268,7 +1279,7 @@ pub(crate) async fn built_tools(
         &all_mcp_tools,
         connectors.as_deref(),
         &turn_context.config,
-        search_tool_enabled(turn_context),
+        lazy_mcp_tool_search_available,
     );
     let mcp_tools = has_mcp_servers.then_some(mcp_tool_exposure.direct_tools);
     let deferred_mcp_tools = mcp_tool_exposure.deferred_tools;

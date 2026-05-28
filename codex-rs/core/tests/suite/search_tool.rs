@@ -418,6 +418,44 @@ async fn search_tool_hides_apps_tools_without_search() -> Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn non_search_model_waits_for_pending_apps_tools_on_first_request() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let apps_server = AppsTestServer::mount_with_connector_name_and_tools_list_delay(
+        &server,
+        "Calendar",
+        Some(Duration::from_secs(/*secs*/ 2)),
+    )
+    .await?;
+    let mock = mount_sse_once(
+        &server,
+        sse(vec![
+            ev_response_created("resp-1"),
+            ev_assistant_message("msg-1", "done"),
+            ev_completed("resp-1"),
+        ]),
+    )
+    .await;
+
+    let mut builder = apps_enabled_builder(apps_server.chatgpt_base_url.clone());
+    let test = builder.build(&server).await?;
+
+    test.submit_turn_with_approval_and_permission_profile(
+        "Create a calendar event",
+        AskForApproval::Never,
+        PermissionProfile::Disabled,
+    )
+    .await?;
+
+    let tools = tool_names(&mock.single_request().body_json());
+    assert!(!tools.iter().any(|name| name == TOOL_SEARCH_TOOL_NAME));
+    assert!(tools.iter().any(|name| name == CALENDAR_CREATE_TOOL));
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn explicit_app_mentions_respect_always_defer() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
