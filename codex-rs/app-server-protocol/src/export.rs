@@ -2924,4 +2924,34 @@ permissionProfile?: string | null};
         let _cleanup = fs::remove_dir_all(&output_dir);
         Ok(())
     }
+
+    #[test]
+    fn generate_json_with_experimental_api_retains_remote_control_pairing_start() -> Result<()> {
+        let output_dir = std::env::temp_dir().join(format!("codex_schema_{}", Uuid::now_v7()));
+        fs::create_dir(&output_dir)?;
+        generate_json_with_experimental(&output_dir, /*experimental_api*/ true)?;
+
+        let client_request_json = fs::read_to_string(output_dir.join("ClientRequest.json"))?;
+        assert_eq!(
+            client_request_json.contains("remoteControl/pairing/start"),
+            true
+        );
+        assert_eq!(
+            output_dir
+                .join("v2")
+                .join("RemoteControlPairingStartParams.json")
+                .exists(),
+            true
+        );
+        assert_eq!(
+            output_dir
+                .join("v2")
+                .join("RemoteControlPairingStartResponse.json")
+                .exists(),
+            true
+        );
+
+        let _cleanup = fs::remove_dir_all(&output_dir);
+        Ok(())
+    }
 }
