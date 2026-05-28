@@ -180,7 +180,13 @@ impl ToolSearchHandler {
                 }
             };
             let search_info = handler.search_info()?;
-            self.lazy_tool_registry.register(Arc::new(handler));
+            let tool_name = handler.tool_name();
+            if !self.lazy_tool_registry.register(Arc::new(handler)) {
+                warn!(
+                    "Skipping lazily loaded MCP tool `{tool_name}` shadowed by a registered tool"
+                );
+                return None;
+            }
             Some(search_info.entry)
         }));
         if entries.is_empty() {
@@ -382,6 +388,73 @@ mod tests {
             registry.tool_names_for_test(),
             vec![ToolName::namespaced("mcp__calendar", "create_event")]
         );
+    }
+
+    #[test]
+    fn lazy_mcp_search_omits_tool_shadowed_by_static_handler() {
+        let lazy_tool_registry = LazyToolRegistry::default();
+        let dynamic_tool = DynamicToolHandler::new(&DynamicToolSpec {
+            namespace: Some("mcp__calendar".to_string()),
+            name: "create_event".to_string(),
+            description: "Static dynamic handler".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false,
+            }),
+            defer_loading: true,
+        })
+        .expect("dynamic tool should convert");
+        let _registry = crate::tools::registry::ToolRegistry::from_tools_with_lazy_registry(
+            vec![Arc::new(dynamic_tool) as Arc<dyn CoreToolRuntime>],
+            lazy_tool_registry.clone(),
+        );
+        let handler = ToolSearchHandler::new_with_lazy_mcp_tools(
+            Vec::new(),
+            /*reloaded_mcp_search_infos*/ Vec::new(),
+            /*lazy_mcp_tools*/ None,
+            lazy_tool_registry,
+        );
+
+        let tools = handler
+            .search_with_lazy_mcp_tools(
+                "calendar",
+                /*limit*/ 1,
+                vec![tool_info("calendar", "create_event", "Create events")],
+            )
+            .expect("shadowed lazy MCP search should succeed");
+
+        assert_eq!(tools, Vec::new());
+    }
+
+    #[test]
+    fn lazy_mcp_search_keeps_equivalent_static_mcp_handler() {
+        let lazy_tool_registry = LazyToolRegistry::default();
+        let tool_name = ToolName::namespaced("mcp__calendar", "create_event");
+        lazy_tool_registry.allow_equivalent_static_mcp_tool(tool_name);
+        let static_mcp_handler =
+            McpHandler::new(tool_info("calendar", "create_event", "Create events"))
+                .expect("static MCP tool should convert");
+        let _registry = crate::tools::registry::ToolRegistry::from_tools_with_lazy_registry(
+            vec![Arc::new(static_mcp_handler) as Arc<dyn CoreToolRuntime>],
+            lazy_tool_registry.clone(),
+        );
+        let handler = ToolSearchHandler::new_with_lazy_mcp_tools(
+            Vec::new(),
+            /*reloaded_mcp_search_infos*/ Vec::new(),
+            /*lazy_mcp_tools*/ None,
+            lazy_tool_registry,
+        );
+
+        let tools = handler
+            .search_with_lazy_mcp_tools(
+                "calendar",
+                /*limit*/ 1,
+                vec![tool_info("calendar", "create_event", "Create events")],
+            )
+            .expect("equivalent static MCP search should succeed");
+
+        assert_eq!(tools.len(), 1);
     }
 
     #[test]

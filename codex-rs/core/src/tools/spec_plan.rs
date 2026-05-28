@@ -831,6 +831,7 @@ fn append_tool_search_executor(
             if lazily_reloaded_mcp_tool_names.contains(&executor.tool_name()) {
                 // Keep the initial source guidance while the lazy loader rebuilds
                 // these MCP entries from one current normalized inventory.
+                lazy_tool_registry.allow_equivalent_static_mcp_tool(executor.tool_name());
                 reloaded_mcp_search_infos.push(search_info);
                 None
             } else {

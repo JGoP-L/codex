@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::RwLock;
 use std::sync::atomic::AtomicBool;
@@ -328,24 +329,55 @@ impl CoreToolRuntime for ExposureOverride {
     }
 }
 
+#[derive(Default)]
+struct LazyToolRegistryState {
+    tools: HashMap<ToolName, Arc<dyn CoreToolRuntime>>,
+    static_tool_names: HashSet<ToolName>,
+    equivalent_static_mcp_tool_names: HashSet<ToolName>,
+}
+
 #[derive(Clone, Default)]
 pub(crate) struct LazyToolRegistry {
-    tools: Arc<RwLock<HashMap<ToolName, Arc<dyn CoreToolRuntime>>>>,
+    state: Arc<RwLock<LazyToolRegistryState>>,
 }
 
 impl LazyToolRegistry {
-    pub(crate) fn register(&self, tool: Arc<dyn CoreToolRuntime>) {
-        self.tools
+    pub(crate) fn allow_equivalent_static_mcp_tool(&self, tool_name: ToolName) {
+        self.state
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .entry(tool.tool_name())
-            .or_insert(tool);
+            .equivalent_static_mcp_tool_names
+            .insert(tool_name);
+    }
+
+    fn reserve_static_tool_names(&self, tool_names: impl IntoIterator<Item = ToolName>) {
+        self.state
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .static_tool_names
+            .extend(tool_names);
+    }
+
+    pub(crate) fn register(&self, tool: Arc<dyn CoreToolRuntime>) -> bool {
+        let tool_name = tool.tool_name();
+        let mut state = self
+            .state
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.static_tool_names.contains(&tool_name)
+            && !state.equivalent_static_mcp_tool_names.contains(&tool_name)
+        {
+            return false;
+        }
+        state.tools.entry(tool_name).or_insert(tool);
+        true
     }
 
     fn tool(&self, name: &ToolName) -> Option<Arc<dyn CoreToolRuntime>> {
-        self.tools
+        self.state
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .tools
             .get(name)
             .map(Arc::clone)
     }
@@ -353,9 +385,10 @@ impl LazyToolRegistry {
     #[cfg(test)]
     pub(crate) fn tool_names_for_test(&self) -> Vec<ToolName> {
         let mut names = self
-            .tools
+            .state
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .tools
             .keys()
             .cloned()
             .collect::<Vec<_>>();
@@ -396,6 +429,7 @@ impl ToolRegistry {
             }
             tools_by_name.insert(name, tool);
         }
+        lazy_tools.reserve_static_tool_names(tools_by_name.keys().cloned());
         Self {
             tools: tools_by_name,
             lazy_tools,
