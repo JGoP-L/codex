@@ -17,6 +17,7 @@ pub(super) struct RemoteControlPairingClient {
     pairing_url: String,
     remote_control_token: String,
     expires_at: OffsetDateTime,
+    auth_change_revision: u64,
 }
 
 impl RemoteControlPairingClient {
@@ -24,12 +25,18 @@ impl RemoteControlPairingClient {
         remote_control_target: &RemoteControlTarget,
         remote_control_token: String,
         expires_at: OffsetDateTime,
+        auth_change_revision: u64,
     ) -> Self {
         Self {
             pairing_url: remote_control_target.pair_url.clone(),
             remote_control_token,
             expires_at,
+            auth_change_revision,
         }
+    }
+
+    pub(super) fn matches_auth_change_revision(&self, auth_change_revision: u64) -> bool {
+        self.auth_change_revision == auth_change_revision
     }
 
     pub(super) async fn start(
@@ -212,6 +219,7 @@ mod tests {
             "remote-control-token".to_string(),
             OffsetDateTime::from_unix_timestamp(33_336_362_096)
                 .expect("future timestamp should parse"),
+            /*auth_change_revision*/ 0,
         );
 
         let response = client
@@ -279,6 +287,7 @@ mod tests {
             "remote-control-token".to_string(),
             OffsetDateTime::from_unix_timestamp(33_336_362_096)
                 .expect("future timestamp should parse"),
+            /*auth_change_revision*/ 0,
         );
 
         let err = client

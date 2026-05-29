@@ -8,6 +8,7 @@ use codex_app_server_protocol::RemoteControlEnableResponse;
 use codex_app_server_protocol::RemoteControlPairingStartParams;
 use codex_app_server_protocol::RemoteControlPairingStartResponse;
 use codex_app_server_protocol::RemoteControlStatusReadResponse;
+use std::io;
 
 #[derive(Clone)]
 pub(crate) struct RemoteControlRequestProcessor {
@@ -51,7 +52,7 @@ impl RemoteControlRequestProcessor {
         self.handle()?
             .start_pairing(params)
             .await
-            .map_err(|err| invalid_request(err.to_string()))
+            .map_err(map_pairing_start_error)
     }
 
     fn handle(&self) -> Result<&RemoteControlHandle, JSONRPCErrorError> {
@@ -65,10 +66,19 @@ fn map_unavailable(err: RemoteControlUnavailable) -> JSONRPCErrorError {
     invalid_request(err.to_string())
 }
 
+fn map_pairing_start_error(err: io::Error) -> JSONRPCErrorError {
+    if err.kind() == io::ErrorKind::InvalidInput {
+        invalid_request(err.to_string())
+    } else {
+        internal_error(err.to_string())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::error_code::INTERNAL_ERROR_CODE;
+    use crate::error_code::INVALID_REQUEST_ERROR_CODE;
     use pretty_assertions::assert_eq;
 
     #[tokio::test]
@@ -84,6 +94,33 @@ mod tests {
                 code: INTERNAL_ERROR_CODE,
                 data: None,
                 message: "remote control is unavailable for this app-server".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn pairing_start_maps_invalid_input_to_invalid_request() {
+        assert_eq!(
+            map_pairing_start_error(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "remote control pairing is unavailable",
+            )),
+            JSONRPCErrorError {
+                code: INVALID_REQUEST_ERROR_CODE,
+                data: None,
+                message: "remote control pairing is unavailable".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn pairing_start_maps_backend_failures_to_internal_error() {
+        assert_eq!(
+            map_pairing_start_error(io::Error::other("remote control pairing failed")),
+            JSONRPCErrorError {
+                code: INTERNAL_ERROR_CODE,
+                data: None,
+                message: "remote control pairing failed".to_string(),
             }
         );
     }

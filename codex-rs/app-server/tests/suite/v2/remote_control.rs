@@ -30,6 +30,7 @@ use tokio::net::TcpStream;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
+use tokio_tungstenite::accept_hdr_async;
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -264,48 +265,53 @@ impl PairingRemoteControlBackend {
                 )
                 .await?;
 
-                loop {
-                    let request = read_http_request(&listener).await?;
-                    match request.request_line.as_str() {
-                        "GET /backend-api/wham/remote/control/server HTTP/1.1" => {
-                            if let Some(websocket_request_tx) = websocket_request_tx.take() {
-                                let _ = websocket_request_tx.send(Ok(request.request_line.clone()));
-                            }
-                            respond_with_status(
-                                request.reader.into_inner(),
-                                "503 Service Unavailable",
-                                "websocket unavailable",
-                            )
-                            .await?;
+                let (websocket_stream, _) = listener.accept().await?;
+                let websocket_request_tx = websocket_request_tx.take();
+                let _websocket = accept_hdr_async(
+                    websocket_stream,
+                    move |request: &tokio_tungstenite::tungstenite::handshake::server::Request,
+                          response: tokio_tungstenite::tungstenite::handshake::server::Response| {
+                        let method = request.method();
+                        let uri = request.uri();
+                        let request_line = format!("{method} {uri} HTTP/1.1");
+                        if let Some(websocket_request_tx) = websocket_request_tx {
+                            let _ = websocket_request_tx.send(Ok(request_line));
                         }
-                        "POST /backend-api/wham/remote/control/server/pair HTTP/1.1" => {
-                            let pair_request = PairRequest {
-                                request_line: request.request_line,
-                                authorization: request.headers.get("authorization").cloned(),
-                                body: serde_json::from_slice(&request.body)
-                                    .context("pair request body should deserialize")?,
-                            };
-                            if let Some(pair_request_tx) = pair_request_tx.take() {
-                                let _ = pair_request_tx.send(Ok(pair_request));
-                            }
-                            respond_with_json(
-                                request.reader.into_inner(),
-                                serde_json::json!({
-                                    "pairing_code": "pairing-code",
-                                    "manual_pairing_code": "ABCD-EFGH",
-                                    "server_id": "server-id",
-                                    "environment_id": "environment-id",
-                                    "expires_at": "3026-05-22T12:34:56Z",
-                                }),
-                            )
-                            .await?;
-                            return Ok::<(), anyhow::Error>(());
-                        }
-                        request_line => {
-                            anyhow::bail!("unexpected remote control request: {request_line}");
-                        }
-                    }
+                        Ok(response)
+                    },
+                )
+                .await?;
+
+                let request = read_http_request(&listener).await?;
+                if request.request_line
+                    != "POST /backend-api/wham/remote/control/server/pair HTTP/1.1"
+                {
+                    anyhow::bail!(
+                        "unexpected remote control request: {}",
+                        request.request_line
+                    );
                 }
+                let pair_request = PairRequest {
+                    request_line: request.request_line,
+                    authorization: request.headers.get("authorization").cloned(),
+                    body: serde_json::from_slice(&request.body)
+                        .context("pair request body should deserialize")?,
+                };
+                if let Some(pair_request_tx) = pair_request_tx.take() {
+                    let _ = pair_request_tx.send(Ok(pair_request));
+                }
+                respond_with_json(
+                    request.reader.into_inner(),
+                    serde_json::json!({
+                        "pairing_code": "pairing-code",
+                        "manual_pairing_code": "ABCD-EFGH",
+                        "server_id": "server-id",
+                        "environment_id": "environment-id",
+                        "expires_at": "3026-05-22T12:34:56Z",
+                    }),
+                )
+                .await?;
+                Ok::<(), anyhow::Error>(())
             }
             .await;
 
@@ -478,10 +484,6 @@ async fn read_http_request(listener: &TcpListener) -> Result<HttpRequest> {
 async fn respond_with_json(stream: TcpStream, body: serde_json::Value) -> Result<()> {
     let body = body.to_string();
     respond_with_status_and_body(stream, "200 OK", &body).await
-}
-
-async fn respond_with_status(stream: TcpStream, status: &str, body: &str) -> Result<()> {
-    respond_with_status_and_body(stream, status, body).await
 }
 
 async fn respond_with_status_and_body(
