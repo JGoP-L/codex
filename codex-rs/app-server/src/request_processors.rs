@@ -515,6 +515,7 @@ use token_usage_replay::send_thread_token_usage_update_to_connection;
 
 mod config_errors;
 mod request_errors;
+mod thread_delete;
 mod thread_goal_processor;
 mod thread_lifecycle;
 mod thread_resume_redaction;
