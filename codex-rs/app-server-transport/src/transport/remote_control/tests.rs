@@ -62,6 +62,7 @@ use tokio_tungstenite::tungstenite;
 use tokio_util::sync::CancellationToken;
 
 const TEST_INSTALLATION_ID: &str = "11111111-1111-4111-8111-111111111111";
+const TEST_REMOTE_CONTROL_URL: &str = "http://127.0.0.1:1/backend-api/wham/remote/control";
 const TEST_REMOTE_CONTROL_SERVER_TOKEN: &str = "Remote Control Token";
 const TEST_REFRESHED_REMOTE_CONTROL_SERVER_TOKEN: &str = "Refreshed Remote Control Token";
 const TEST_REMOTE_CONTROL_SERVER_TOKEN_EXPIRES_AT: &str = "2999-01-01T00:00:00Z";
@@ -133,6 +134,7 @@ fn test_server_name() -> String {
 }
 
 fn remote_control_handle_with_pairing_client(
+    remote_control_url: &str,
     auth_change_rx: watch::Receiver<u64>,
 ) -> RemoteControlHandle {
     let (enabled_tx, _enabled_rx) = watch::channel(/*init*/ true);
@@ -143,7 +145,7 @@ fn remote_control_handle_with_pairing_client(
         environment_id: Some("env_test".to_string()),
     });
     let pairing_client = Arc::new(StdMutex::new(Some(RemoteControlPairingClient::new(
-        &normalize_remote_control_url("http://127.0.0.1:1/backend-api/wham/remote/control")
+        &normalize_remote_control_url(remote_control_url)
             .expect("remote control target should normalize"),
         TEST_REMOTE_CONTROL_SERVER_TOKEN.to_string(),
         OffsetDateTime::from_unix_timestamp(33_336_362_096).expect("future timestamp should parse"),
@@ -941,7 +943,10 @@ async fn remote_control_handle_enable_disable_stops_and_restarts_connections() {
 
 #[tokio::test]
 async fn remote_control_handle_disable_clears_stale_pairing_client() {
-    let remote_handle = remote_control_handle_with_pairing_client(watch::channel(/*init*/ 0u64).1);
+    let remote_handle = remote_control_handle_with_pairing_client(
+        TEST_REMOTE_CONTROL_URL,
+        watch::channel(/*init*/ 0u64).1,
+    );
 
     assert_eq!(
         remote_handle.disable(),
@@ -966,7 +971,8 @@ async fn remote_control_handle_disable_clears_stale_pairing_client() {
 #[tokio::test]
 async fn remote_control_handle_rejects_pairing_client_after_auth_change() {
     let (auth_change_tx, auth_change_rx) = watch::channel(/*init*/ 0u64);
-    let remote_handle = remote_control_handle_with_pairing_client(auth_change_rx);
+    let remote_handle =
+        remote_control_handle_with_pairing_client(TEST_REMOTE_CONTROL_URL, auth_change_rx);
     auth_change_tx.send_modify(|revision| *revision += 1);
 
     assert_eq!(
@@ -974,6 +980,83 @@ async fn remote_control_handle_rejects_pairing_client_after_auth_change() {
             .start_pairing(RemoteControlPairingStartParams::default())
             .await
             .expect_err("pairing should wait for current-account enrollment")
+            .to_string(),
+        "remote control pairing is unavailable until enrollment completes"
+    );
+}
+
+#[tokio::test]
+async fn remote_control_handle_discards_pairing_response_after_auth_change() {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("listener should bind");
+    let remote_control_url = remote_control_url_for_listener(&listener);
+    let codex_home = TempDir::new().expect("temp dir should create");
+    save_auth(
+        codex_home.path(),
+        &remote_control_auth_dot_json(Some("account_id")),
+        AuthCredentialsStoreMode::File,
+    )
+    .expect("initial auth should save");
+    let auth_manager = AuthManager::shared(
+        codex_home.path().to_path_buf(),
+        /*enable_codex_api_key_env*/ false,
+        AuthCredentialsStoreMode::File,
+        /*chatgpt_base_url*/ None,
+    )
+    .await;
+    let remote_handle = remote_control_handle_with_pairing_client(
+        &remote_control_url,
+        auth_manager.auth_change_receiver(),
+    );
+    let pairing_task = tokio::spawn({
+        let remote_handle = remote_handle.clone();
+        async move {
+            remote_handle
+                .start_pairing(RemoteControlPairingStartParams::default())
+                .await
+        }
+    });
+
+    let pairing_request = accept_http_request(&listener).await;
+    assert_eq!(
+        pairing_request.request_line,
+        "POST /backend-api/wham/remote/control/server/pair HTTP/1.1"
+    );
+    assert_eq!(
+        pairing_request.headers.get("authorization"),
+        Some(&format!("Bearer {TEST_REMOTE_CONTROL_SERVER_TOKEN}"))
+    );
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&pairing_request.body)
+            .expect("pairing request body should deserialize"),
+        json!({ "manual_code": false })
+    );
+
+    save_auth(
+        codex_home.path(),
+        &remote_control_auth_dot_json(Some("next_account_id")),
+        AuthCredentialsStoreMode::File,
+    )
+    .expect("next auth should save");
+    auth_manager.reload().await;
+    respond_with_json(
+        pairing_request.stream,
+        json!({
+            "pairing_code": "stale-pairing-code",
+            "manual_pairing_code": "ABCD-EFGH",
+            "server_id": "srv_e_test",
+            "environment_id": "env_test",
+            "expires_at": "3026-05-22T12:34:56Z",
+        }),
+    )
+    .await;
+
+    assert_eq!(
+        pairing_task
+            .await
+            .expect("pairing task should join")
+            .expect_err("stale pairing response should be discarded")
             .to_string(),
         "remote control pairing is unavailable until enrollment completes"
     );

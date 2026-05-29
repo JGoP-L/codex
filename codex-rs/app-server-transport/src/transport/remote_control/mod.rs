@@ -148,12 +148,8 @@ impl RemoteControlHandle {
             ));
         }
 
+        let auth_change_revision = self.auth_change_revision();
         let pairing_client = {
-            let auth_change_revision = *self
-                .auth_change_rx
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .borrow();
             let mut pairing_client = self
                 .pairing_client
                 .lock()
@@ -169,17 +165,31 @@ impl RemoteControlHandle {
             }
             current_pairing_client
         }
-        .ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "remote control pairing is unavailable until enrollment completes",
-            )
-        })?;
-        pairing_client
+        .ok_or_else(Self::pairing_unavailable_error)?;
+        let pairing_response = pairing_client
             .start(protocol::StartRemoteControlPairingRequest {
                 manual_code: params.manual_code,
             })
-            .await
+            .await;
+        if self.auth_change_revision() != auth_change_revision {
+            return Err(Self::pairing_unavailable_error());
+        }
+        pairing_response
+    }
+
+    fn auth_change_revision(&self) -> u64 {
+        *self
+            .auth_change_rx
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .borrow()
+    }
+
+    fn pairing_unavailable_error() -> io::Error {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "remote control pairing is unavailable until enrollment completes",
+        )
     }
 
     fn publish_status(
