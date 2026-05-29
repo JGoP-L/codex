@@ -1182,7 +1182,7 @@ pub(crate) async fn built_tools(
         search_tool_enabled(turn_context) && turn_context.provider.capabilities().namespace_tools;
     let (all_mcp_tools, mut pending_mcp_server_names) = if lazy_mcp_tool_search_available {
         let pending_mcp_server_names =
-            mcp_connection_manager.pending_server_names_without_startup_snapshot();
+            mcp_connection_manager.pending_server_names_without_cached_tool_info_snapshot();
         let tools = mcp_connection_manager
             .list_ready_or_cached_tools()
             .or_cancel(cancellation_token)

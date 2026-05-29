@@ -1005,7 +1005,7 @@ async fn list_ready_or_cached_tools_skips_pending_client_without_cached_tool_inf
     );
 
     assert_eq!(
-        manager.pending_server_names_without_startup_snapshot(),
+        manager.pending_server_names_without_cached_tool_info_snapshot(),
         vec!["optional".to_string()]
     );
     let tools = tokio::time::timeout(

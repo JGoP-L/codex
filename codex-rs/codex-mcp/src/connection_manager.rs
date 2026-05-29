@@ -518,8 +518,7 @@ impl McpConnectionManager {
     pub async fn list_ready_or_cached_tools(&self) -> Vec<ToolInfo> {
         let mut tools = Vec::new();
         for (server_name, managed_client) in &self.clients {
-            let has_cached_tool_info_snapshot =
-                managed_client.cached_tool_info_snapshot.is_some();
+            let has_cached_tool_info_snapshot = managed_client.cached_tool_info_snapshot.is_some();
             let startup_complete = managed_client
                 .startup_complete
                 .load(std::sync::atomic::Ordering::Acquire);
@@ -542,12 +541,12 @@ impl McpConnectionManager {
     }
 
     /// Returns servers whose tool inventory is not yet available without waiting.
-    pub fn pending_server_names_without_startup_snapshot(&self) -> Vec<String> {
+    pub fn pending_server_names_without_cached_tool_info_snapshot(&self) -> Vec<String> {
         let mut pending = self
             .clients
             .iter()
             .filter(|(_, managed_client)| {
-                managed_client.startup_snapshot.is_none()
+                managed_client.cached_tool_info_snapshot.is_none()
                     && !managed_client
                         .startup_complete
                         .load(std::sync::atomic::Ordering::Acquire)
