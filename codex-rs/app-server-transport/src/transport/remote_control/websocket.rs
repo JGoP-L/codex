@@ -288,7 +288,6 @@ enum ConnectionEndReason {
     EnabledWatchClosed,
     AuthChanged,
     AuthWatchClosed,
-    ServerTokenRefreshRequired,
     ConnectionWorkerStopped,
 }
 
@@ -730,38 +729,55 @@ impl RemoteControlWebsocket {
         ));
 
         let mut enabled_rx = self.enabled_rx.clone();
-        let server_token_refresh_delay = self
-            .enrollment
-            .as_ref()
-            .and_then(RemoteControlEnrollment::server_token_refresh_delay);
-        let server_token_refresh = async move {
-            match server_token_refresh_delay {
-                Some(delay) => tokio::time::sleep(delay).await,
-                None => std::future::pending().await,
-            }
-        };
-        tokio::pin!(server_token_refresh);
-        let connection_end_reason = tokio::select! {
-            _ = shutdown_token.cancelled() => ConnectionEndReason::Shutdown,
-            changed = enabled_rx.wait_for(|enabled| !*enabled) => {
-                if changed.is_ok() {
-                    self.status_publisher
-                        .publish_status(RemoteControlConnectionStatus::Disabled);
-                    ConnectionEndReason::Disabled
-                } else {
-                    ConnectionEndReason::EnabledWatchClosed
+        let mut server_token_refresh_retry_delay = None;
+        let connection_end_reason = loop {
+            let server_token_refresh_delay =
+                server_token_refresh_retry_delay.take().or_else(|| {
+                    self.enrollment
+                        .as_ref()
+                        .and_then(RemoteControlEnrollment::server_token_refresh_delay)
+                });
+            let server_token_refresh = async move {
+                match server_token_refresh_delay {
+                    Some(delay) => tokio::time::sleep(delay).await,
+                    None => std::future::pending().await,
                 }
-            }
-            changed = self.auth_change_rx.changed() => {
-                if changed.is_ok() {
-                    self.auth_recovery = self.auth_manager.unauthorized_recovery();
-                    ConnectionEndReason::AuthChanged
-                } else {
-                    ConnectionEndReason::AuthWatchClosed
+            };
+            tokio::pin!(server_token_refresh);
+            let connection_end_reason = tokio::select! {
+                _ = shutdown_token.cancelled() => Some(ConnectionEndReason::Shutdown),
+                changed = enabled_rx.wait_for(|enabled| !*enabled) => {
+                    if changed.is_ok() {
+                        self.status_publisher
+                            .publish_status(RemoteControlConnectionStatus::Disabled);
+                        Some(ConnectionEndReason::Disabled)
+                    } else {
+                        Some(ConnectionEndReason::EnabledWatchClosed)
+                    }
                 }
+                changed = self.auth_change_rx.changed() => {
+                    if changed.is_ok() {
+                        self.auth_recovery = self.auth_manager.unauthorized_recovery();
+                        Some(ConnectionEndReason::AuthChanged)
+                    } else {
+                        Some(ConnectionEndReason::AuthWatchClosed)
+                    }
+                }
+                _ = &mut server_token_refresh => None,
+                _ = join_set.join_next() => Some(ConnectionEndReason::ConnectionWorkerStopped),
+            };
+            if let Some(connection_end_reason) = connection_end_reason {
+                break connection_end_reason;
             }
-            _ = &mut server_token_refresh => ConnectionEndReason::ServerTokenRefreshRequired,
-            _ = join_set.join_next() => ConnectionEndReason::ConnectionWorkerStopped,
+            if let Err(err) = self.refresh_connected_server_token().await {
+                warn!(
+                    error = %err,
+                    error_kind = ?err.kind(),
+                    retry_delay = ?REMOTE_CONTROL_ACCOUNT_ID_RETRY_INTERVAL,
+                    "failed to refresh connected app-server remote control server token"
+                );
+                server_token_refresh_retry_delay = Some(REMOTE_CONTROL_ACCOUNT_ID_RETRY_INTERVAL);
+            }
         };
         clear_pairing_client(&self.pairing_client);
         shutdown_token.cancel();
@@ -769,6 +785,70 @@ impl RemoteControlWebsocket {
         Self::join_connection_workers(&mut join_set, REMOTE_CONTROL_CONNECTION_SHUTDOWN_TIMEOUT)
             .await;
         connection_end_reason
+    }
+
+    async fn refresh_connected_server_token(&mut self) -> io::Result<()> {
+        let remote_control_target = self.remote_control_target.clone().ok_or_else(|| {
+            io::Error::other("missing remote control target while refreshing server token")
+        })?;
+        let auth = load_remote_control_auth(&self.auth_manager).await?;
+        let auth_change_revision = *self.auth_change_rx.borrow();
+        let enrollment = self.enrollment.as_ref().ok_or_else(|| {
+            io::Error::other("missing remote control enrollment while refreshing server token")
+        })?;
+        if enrollment.account_id != auth.account_id {
+            clear_pairing_client(&self.pairing_client);
+            return Err(io::Error::new(
+                ErrorKind::InvalidInput,
+                "remote control auth changed while refreshing server token",
+            ));
+        }
+
+        info!(
+            "refreshing connected remote control server token: websocket_url={}, refresh_url={}, account_id={}, server_id={}, environment_id={}",
+            remote_control_target.websocket_url,
+            remote_control_target.refresh_url,
+            auth.account_id,
+            enrollment.server_id,
+            enrollment.environment_id
+        );
+        let refresh_result = {
+            let enrollment = self.enrollment.as_mut().ok_or_else(|| {
+                io::Error::other("missing remote control enrollment while refreshing server token")
+            })?;
+            refresh_remote_control_server(
+                &remote_control_target,
+                &auth,
+                &self.installation_id,
+                enrollment,
+            )
+            .await
+        };
+        match refresh_result {
+            Ok(()) => {}
+            Err(err)
+                if err.kind() == ErrorKind::PermissionDenied
+                    && recover_remote_control_auth(
+                        &mut self.auth_recovery,
+                        &mut self.auth_change_rx,
+                    )
+                    .await =>
+            {
+                return Err(io::Error::other(format!(
+                    "{err}; retrying after auth recovery"
+                )));
+            }
+            Err(err) => return Err(err),
+        }
+        let enrollment = self.enrollment.as_ref().ok_or_else(|| {
+            io::Error::other("missing remote control enrollment after refreshing server token")
+        })?;
+        set_pairing_client(
+            &self.pairing_client,
+            &remote_control_target,
+            enrollment,
+            auth_change_revision,
+        )
     }
 
     async fn join_connection_workers(

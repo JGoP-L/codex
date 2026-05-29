@@ -1170,7 +1170,7 @@ async fn remote_control_refreshes_server_token_while_connected() {
     let (transport_event_tx, _transport_event_rx) =
         mpsc::channel::<TransportEvent>(CHANNEL_CAPACITY);
     let shutdown_token = CancellationToken::new();
-    let (remote_task, _remote_handle) = start_remote_control(
+    let (remote_task, remote_handle) = start_remote_control(
         RemoteControlStartConfig {
             remote_control_url,
             installation_id: TEST_INSTALLATION_ID.to_string(),
@@ -1197,11 +1197,6 @@ async fn remote_control_refreshes_server_token_while_connected() {
     )
     .await;
     let mut first_websocket = accept_remote_control_connection(&listener).await;
-    expect_remote_control_connection_closed(
-        &mut first_websocket,
-        "server token refresh should close the stale websocket",
-    )
-    .await;
 
     let refresh_request = accept_http_request(&listener).await;
     assert_eq!(
@@ -1217,18 +1212,60 @@ async fn remote_control_refreshes_server_token_while_connected() {
         ),
     )
     .await;
-    let (handshake_request, mut second_websocket) =
-        accept_remote_control_backend_connection(&listener).await;
+    assert!(
+        timeout(Duration::from_millis(100), first_websocket.next())
+            .await
+            .is_err(),
+        "server token refresh should keep the websocket open"
+    );
+
+    let pairing_task = tokio::spawn({
+        let remote_handle = remote_handle.clone();
+        async move {
+            remote_handle
+                .start_pairing(RemoteControlPairingStartParams::default())
+                .await
+        }
+    });
+    let pairing_request = accept_http_request(&listener).await;
     assert_eq!(
-        handshake_request.headers.get("authorization"),
+        pairing_request.request_line,
+        "POST /backend-api/wham/remote/control/server/pair HTTP/1.1"
+    );
+    assert_eq!(
+        pairing_request.headers.get("authorization"),
         Some(&format!(
             "Bearer {TEST_REFRESHED_REMOTE_CONTROL_SERVER_TOKEN}"
         ))
     );
-    second_websocket
+    respond_with_json(
+        pairing_request.stream,
+        json!({
+            "pairing_code": "pairing-code",
+            "manual_pairing_code": "ABCD-EFGH",
+            "server_id": "srv_e_test",
+            "environment_id": "env_test",
+            "expires_at": "3026-05-22T12:34:56Z",
+        }),
+    )
+    .await;
+    assert_eq!(
+        pairing_task
+            .await
+            .expect("pairing task should join")
+            .expect("pairing should use refreshed server token"),
+        codex_app_server_protocol::RemoteControlPairingStartResponse {
+            pairing_code: "pairing-code".to_string(),
+            manual_pairing_code: Some("ABCD-EFGH".to_string()),
+            environment_id: "env_test".to_string(),
+            expires_at: 33_336_362_096,
+        }
+    );
+
+    first_websocket
         .close(None)
         .await
-        .expect("second websocket should close");
+        .expect("first websocket should close");
 
     shutdown_token.cancel();
     let _ = remote_task.await;
